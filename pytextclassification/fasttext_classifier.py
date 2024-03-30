@@ -1,9 +1,9 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 """
-File  :   rnn_classfier.py
+File  :   text_cnn_classfier.py
 Author:   dangjinming(jmdang777@qq.com)
-Desc  :   rnn_classfier
+Desc  :   text_cnn_classfier
 """
 
 import collections
@@ -57,17 +57,28 @@ class SelfDataset(Dataset):
     """self dataset"""
 
     def __init__(self, datas):
-        ids, labels, lengths = zip(*datas)
+        ids, bigram, trigram, labels, lengths= zip(*datas)
         self.ids = np.array(ids)
+        self.bigram = np.array(bigram)
+        self.trigram = np.array(trigram)
         self.labels = np.array(labels)
         self.lengths = np.array(lengths)
+        
 
     def __getitem__(self, index):
-        return self.ids[index], self.labels[index], self.lengths[index]
+        return self.ids[index], self.bigram[index], self.trigram[index], self.labels[index], self.lengths[index], 
 
     def __len__(self):
         return len(self.ids)
 
+def biGramHash(input_ids, index, n_gram_buckets_size):
+            t1 = input_ids[index - 1] if index - 1 >= 0 else 0
+            return (t1 * 7777777) % n_gram_buckets_size
+
+def triGramHash(input_ids, index, n_gram_buckets_size):
+    t1 = input_ids[index - 1] if index - 1 >= 0 else 0
+    t2 = input_ids[index - 2] if index - 2 >= 0 else 0
+    return (t2 * 8888888 *  + t1 * 7777777) % n_gram_buckets_size
 
 def build_dataset(
     X, 
@@ -78,8 +89,11 @@ def build_dataset(
     word_vocab_path=None,
     label_vocab_path=None,
     max_seq_length=64,
-    max_vocab_size=10000
+    max_vocab_size=100000,
+    enable_ngram=True,
+    n_gram_buckets_size=200000
 ):
+
     assert vocab_level in ["char", "word"], "vocab_level must be in  [char, word]"
     if os.path.exists(word_vocab_path):
         vocab = Vocab(word_vocab_path)
@@ -110,76 +124,71 @@ def build_dataset(
         else:
             input_ids = input_ids[:max_seq_length]
             seq_len = max_seq_length
+        # fasttext ngram
+        bigram = []
+        trigram = []
+        if enable_ngram:
+            # ------ngram------
+            for i in range(max_seq_length):
+                bigram.append(biGramHash(input_ids, i, n_gram_buckets_size))
+                trigram.append(triGramHash(input_ids, i, n_gram_buckets_size))
+        else:
+            bigram = [0] * max_seq_length
+            trigram = [0] * max_seq_length
+
         if not multi_label:
             target_label = label_encoder.transform(label)
         else:
             target_label = [0.0] * label_encoder.size()
             for ln in label.split(labels_sep):
                 target_label[label_encoder.transform(ln)] = 1
-        train_datasets.append((input_ids, target_label, seq_len))
+        train_datasets.append((input_ids, bigram, trigram, target_label, seq_len))
     return SelfDataset(train_datasets), vocab, label_encoder
 
 
-class TextRNNAttModel(nn.Module):
-    """Attention-Based Bidirectional Long Short-Term Memory Networks for Relation Classification"""
+class FastTextModel(nn.Module):
+    """Bag of Tricks for Efficient Text Classification"""
 
     def __init__(
             self,
             vocab_size,
             num_classes,
             embed_size=300,
-            lstm_hidden_size=256,
-            fc_hidden_size=128,
-            lstm_layers=2,
-            pooling_type="mean",
-            lstm_dropout_rate=0.3
+            n_gram_buckets_size=700000,
+            fast_text_hidden_size=256,
+            fast_text_dropout_rate=0.5
     ):
         super().__init__()
-        self.pooling_type = pooling_type
-        self.word_emb = nn.Embedding(vocab_size, embed_size, padding_idx=0)
+        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=0)
+        self.embedding_bigram = nn.Embedding(n_gram_buckets_size, embed_size)
+        self.embedding_trigram= nn.Embedding(n_gram_buckets_size, embed_size)
+        self.dropout = nn.Dropout(fast_text_dropout_rate)
+        self.fc1 = nn.Linear(embed_size * 3, fast_text_hidden_size)
+        self.fc2 = nn.Linear(fast_text_hidden_size, num_classes)
 
-        self.lstm = nn.LSTM(input_size=embed_size,
-                            hidden_size=lstm_hidden_size,
-                            num_layers=lstm_layers,
-                            bidirectional=True,
-                            batch_first=True,
-                            dropout=lstm_dropout_rate)
-        self.att = SelfAttention(lstm_hidden_size)
-        self.fc = nn.Linear(lstm_hidden_size * 2, fc_hidden_size)
-        self.tanch = nn.Tanh()
-        self.output_layer = nn.Linear(fc_hidden_size, num_classes)
+    def forward(self, inputs, bigram, trigram, true_lengths=None):
+        word_embeded = self.embedding(inputs)
+        bigram_embeded = self.embedding_bigram(bigram)
+        trigram_embeded = self.embedding_trigram(trigram)
+        embeded_cat = torch.cat((word_embeded, bigram_embeded, trigram_embeded), -1)
 
-    def forward(self, inputs, true_lengths=None):
-        # Shape: (batch_size, num_tokens, embedding_dim)
-        embedded_text = self.word_emb(inputs)
-        encoded_text, _ = self.lstm(embedded_text)
-        if self.pooling_type == 'sum':
-            encoded_text_pool = torch.sum(encoded_text, dim=1)
-        elif self.pooling_type == 'max':
-            encoded_text_pool = torch.max(encoded_text, dim=1)
-        elif self.pooling_type == 'mean':
-            encoded_text_pool = torch.mean(encoded_text, dim=1)
-        else:
-            raise RuntimeError(
-                "Unexpected pooling type %s ."
-                "Pooling type must be one of sum, max and mean." %
-                self.pooling_type)
+        out = embeded_cat.mean(dim=1)
+        out = self.dropout(out)
+        out = self.fc1(out)
+        out = F.relu(out)
+        out = self.fc2(out)
+        return out
 
-        fc_out = self.tanch(self.fc(encoded_text_pool))
-        # Shape: (batch_size, num_classes)
-        logits = self.output_layer(fc_out)
-        return logits
-
-
-class TextRNNClassifier(ClassifierBase):
-    """TextRNNClassifier"""
+class FastTextClassifier(ClassifierBase):
+    """FastTextClassifier"""
 
     def __init__(
-            self,
+            self,            
             multi_label=False,
-            lstm_hidden_size=128,
-            num_layers=2,
-            lstm_dropout_rate=0.5,
+            enable_ngram=True,
+            n_gram_buckets_size=700000,
+            fast_text_hidden_size=256,
+            fast_text_dropout_rate=0.5,
             use_cuda=True,
             cuda_device=-1,
             args=None,
@@ -187,10 +196,8 @@ class TextRNNClassifier(ClassifierBase):
             **kwargs
     ):
         """
-        Init the TextRNNClassifier
-        @param lstm_hidden_size: lstm隐藏层
-        @param num_layers: lstm层数
-        @param lstm_dropout_rate:
+        Init the FastTextClassifier
+        @param tast_text_dropout_rate:
         """
         if use_cuda:
             if torch.cuda.is_available():
@@ -202,9 +209,7 @@ class TextRNNClassifier(ClassifierBase):
                 raise ValueError("'use_cuda' set to True when cuda is unavailable."
                                  " Make sure CUDA is available or set use_cuda=False.")
         logger.info(f'device: {self.device}')
-
-        self.lstm_dropout_rate = lstm_dropout_rate
-
+        
         self.args =  ClassificationArgs()
         if isinstance(args, dict):
             self.args.update_from_dict(args)
@@ -216,15 +221,15 @@ class TextRNNClassifier(ClassifierBase):
                 "multi_label": multi_label,
                 "use_cuda": use_cuda,
                 "labels_sep": labels_sep,  # if multi_label is true,it will be valid
-                "lstm_hidden_size": lstm_hidden_size,
-                "num_layers": num_layers,
+                "n_gram_buckets_size": n_gram_buckets_size,
+                "fast_text_hidden_size": fast_text_hidden_size,
+                "fast_text_dropout_rate": fast_text_dropout_rate
             }
         )
-        set_seed(self.args.SEED)
         self.model = None
 
     def __str__(self):
-        return f'TextRNNClassifier instance ({self.model})'
+        return f'FastTextClassifier instance ({self.model})'
 
     def train(
             self,
@@ -243,7 +248,9 @@ class TextRNNClassifier(ClassifierBase):
         @param args:
         @param eval_data:
         @return:
-        """    
+        """
+        SEED = 1024
+        set_seed(SEED)
 
         logger.info('train model...')
         if args:
@@ -289,7 +296,10 @@ class TextRNNClassifier(ClassifierBase):
             word_vocab_path = word_vocab_path,
             label_vocab_path = label_vocab_path,
             max_seq_length = self.args.max_seq_length,
-            max_vocab_size = self.args.max_vocab_size
+            max_vocab_size = self.args.max_vocab_size,
+            enable_ngram=self.args.enable_ngram,
+            n_gram_buckets_size=self.args.n_gram_buckets_size,
+
         )
 
         train_iter = DataLoader(train_dataset, batch_size=self.args.batch_size, shuffle=True)
@@ -304,7 +314,9 @@ class TextRNNClassifier(ClassifierBase):
                 word_vocab_path = word_vocab_path,
                 label_vocab_path = label_vocab_path,
                 max_seq_length = self.args.max_seq_length,
-                max_vocab_size = self.args.max_vocab_size
+                max_vocab_size = self.args.max_vocab_size,
+                enable_ngram=self.args.enable_ngram,
+                n_gram_buckets_size=self.args.n_gram_buckets_size,
             )
 
             dev_iter = DataLoader(eval_dataset, batch_size=self.args.batch_size, shuffle=False)
@@ -321,14 +333,13 @@ class TextRNNClassifier(ClassifierBase):
         logger.info(f'train_data_size:{len(train_dataset)}, dev_data_size: {len(dev_iter) if dev_iter else "no dev_data"}')
 
         # 3. 创建model
-        self.model = TextRNNAttModel(
-            vocab_size, 
-            num_labels,
+        self.model = FastTextModel(
+            vocab_size=vocab_size,
+            num_classes=num_labels,
             embed_size=self.args.embed_size,
-            lstm_hidden_size=self.args.lstm_hidden_size,
-            lstm_layers=self.args.num_layers,
-            pooling_type=self.args.pooling_type,
-            lstm_dropout_rate=self.args.lstm_dropout_rate
+            n_gram_buckets_size=self.args.n_gram_buckets_size,
+            fast_text_hidden_size=self.args.fast_text_hidden_size,
+            fast_text_dropout_rate=self.args.fast_text_dropout_rate
         )
         self._move_model_to_device()
         # 4. 训练循环
@@ -416,10 +427,12 @@ class TextRNNClassifier(ClassifierBase):
         self.model.train()
         for epoch in range(self.args.num_train_epochs):
             logger.info('Epoch [{}/{}]'.format(epoch + 1, self.args.num_train_epochs))
-            for step, (input_ids, labels, lengths) in enumerate(train_iter):
+            for step, (input_ids, bigram, trigram, labels, lengths) in enumerate(train_iter):
                 input_ids = input_ids.to(self.device)
+                bigram = bigram.to(self.device)
+                trigram = trigram.to(self.device)
                 labels = labels.to(self.device)
-                outputs = self.model(input_ids)
+                outputs = self.model(input_ids, bigram, trigram)
                 loss = criterion(outputs, labels)
 
                 if show_running_loss:
@@ -628,7 +641,7 @@ class TextRNNClassifier(ClassifierBase):
         loss_total = 0.0
         eval_steps = 0
         n_batches = len(data_iter)
-        eval_data_nums = sum([len(input_ids) for (input_ids, labels, lengths) in data_iter])
+        eval_data_nums = sum([len(input_ids) for (input_ids, bigram, trigram, labels, lengths) in data_iter])
         pred_labels = np.empty((eval_data_nums, self.args.num_labels))
         if self.args.multi_label:
             true_labels = np.empty((eval_data_nums, self.args.num_labels))
@@ -636,10 +649,12 @@ class TextRNNClassifier(ClassifierBase):
             true_labels = np.empty((eval_data_nums))
 
         with torch.no_grad():
-            for i, (input_ids, labels, lengths) in enumerate(data_iter):
+            for i, (input_ids, bigram, trigram, labels, lengths) in enumerate(data_iter):
                 input_ids = input_ids.to(self.device)
+                bigram = bigram.to(self.device)
+                trigram = trigram.to(self.device)
                 labels = labels.to(self.device)
-                outputs = self.model(input_ids)
+                outputs = self.model(input_ids, bigram, trigram)
                 loss = criterion(outputs, labels)
                 if self.args.multi_label:
                     outputs = outputs.sigmoid()
@@ -708,6 +723,8 @@ class TextRNNClassifier(ClassifierBase):
         tokenizer = CommonTokenizer(vocab)
 
         to_predict_ids = []
+        to_predict_bigram = []
+        to_predict_trigram = []
         for content in to_predict:
             input_ids = tokenizer.encode(content)
             seq_len = len(input_ids)
@@ -718,7 +735,20 @@ class TextRNNClassifier(ClassifierBase):
                 input_ids = input_ids[:self.args.max_seq_length]
                 seq_len = self.args.max_seq_length
 
+            # fasttext ngram
+            bigram = []
+            trigram = []
+            if self.args.enable_ngram:
+                # ------ngram------
+                for i in range(self.args.max_seq_length):
+                    bigram.append(biGramHash(input_ids, i, self.args.n_gram_buckets_size))
+                    trigram.append(triGramHash(input_ids, i,self.args.n_gram_buckets_size))
+            else:
+                bigram = [0] * max_seq_length
+                trigram = [0] * max_seq_length
             to_predict_ids.append(input_ids)
+            to_predict_bigram.append(bigram)
+            to_predict_trigram.append(trigram)
 
         if self.args.multi_label:
             out_label_ids = np.empty((len(to_predict), self.args.num_labels))
@@ -736,9 +766,14 @@ class TextRNNClassifier(ClassifierBase):
                     if i != (n_batches - 1)
                     else len(to_predict_ids)
                 )
-                batch_input = to_predict_ids[start_index:end_index]
-                batch_input = torch.tensor(batch_input, dtype=torch.long).to(self.device)
-                logits = self.model(batch_input)
+                batch_input_ids = to_predict_ids[start_index:end_index]
+                batch_bigram = to_predict_bigram[start_index:end_index]
+                batch_trigram = to_predict_trigram[start_index:end_index]
+                batch_input_ids = torch.tensor(batch_input_ids, dtype=torch.long).to(self.device)
+                batch_bigram = torch.tensor(batch_bigram, dtype=torch.long).to(self.device)
+                batch_trigram = torch.tensor(batch_trigram, dtype=torch.long).to(self.device)
+
+                logits = self.model(batch_input_ids, batch_bigram, batch_trigram)
                 if self.args.multi_label:
                     threshold_values = self.args.threshold if self.args.threshold else 0.5
                     pre_scores = logits.detach().cpu().sigmoid().numpy()
@@ -767,7 +802,6 @@ class TextRNNClassifier(ClassifierBase):
         """
 
         model_path = os.path.join(self.args.best_model_dir, 'pytorch_model.bin')
-
         word_vocab_file = os.path.join(self.args.output_dir, 'word_vocab.txt')
         label_vocab_file = os.path.join(self.args.output_dir, 'label_vocab.txt')
         if not os.path.exists(word_vocab_file) \
@@ -780,17 +814,16 @@ class TextRNNClassifier(ClassifierBase):
         label_encoder = LabelEncoder(label_vocab_file)
 
         vocab_size = len(vocab)
-        num_classes = label_encoder.size()
+        num_labels = label_encoder.size()
 
         #创建model
-        self.model = TextRNNAttModel(
-            vocab_size, 
-            num_classes,
+        self.model = FastTextModel(
+            vocab_size=vocab_size,
+            num_classes=num_labels,
             embed_size=self.args.embed_size,
-            lstm_hidden_size=self.args.lstm_hidden_size,
-            lstm_layers=self.args.num_layers,
-            pooling_type=self.args.pooling_type,
-            lstm_dropout_rate=self.lstm_dropout_rate
+            n_gram_buckets_size=self.args.n_gram_buckets_size,
+            fast_text_hidden_size=self.args.fast_text_hidden_size,
+            fast_text_dropout_rate=self.args.fast_text_dropout_rate
         )
         self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         self._move_model_to_device()
@@ -945,17 +978,19 @@ if __name__ == '__main__':
     train_args = ClassificationArgs()
     train_args.num_labels = 2
     train_args.num_train_epochs = 2
-    train_args.batch_size = 256
+    train_args.batch_size = 128
+    train_args.vocab_level = "char"
+    train_args.enable_ngram = True
 
-    textrnn = TextRNNClassifier(multi_label=True, args=train_args)
+    fasttext = FastTextClassifier(multi_label=True, args=train_args)
 
     #模型训练
-    textrnn.train(train_data="data/train.txt", eval_data="data/dev.txt")
+    fasttext.train(train_data="data/train.txt", eval_data="data/dev.txt")
 
 
     #加载在验证集效果最好的模型进行预测
-    textrnn.load_model()
-    preds, model_outputs = textrnn.predict([
+    fasttext.load_model()
+    preds, model_outputs = fasttext.predict([
         "柔弱的儿媳跪在地上向老头子苦苦哀求：“够了，适可而止！",
         "那里芳草丛生，他徘徊找不到入口，最终还是她领着他进来",
         "儿媳妇想来都是保守稳重的人，但是夜深人静后像变了个人似的",

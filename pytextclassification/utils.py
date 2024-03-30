@@ -20,11 +20,11 @@ logging.basicConfig(
     level=logging.INFO)
 
 
-def load_data(data_list_or_path, header=None, names=('labels', 'text'), delimiter='\t',
-              labels_sep=',', is_train=False):
+def load_data(data, header=None, names=('labels', 'text'), delimiter='\t',
+              labels_sep=','):
     """
     Encoding data_list text
-    @param data_list_or_path: list of (label, text), eg: [(label, text), (label, text) ...]
+    @param data: list of (label, text),  or pd.DataFrame or str
     @param header: read_csv header
     @param names: read_csv names
     @param delimiter: read_csv sep
@@ -32,33 +32,26 @@ def load_data(data_list_or_path, header=None, names=('labels', 'text'), delimite
     @param is_train: is train data
     @return: X, y, data_df
     """
-    if isinstance(data_list_or_path, list):
-        data_df = pd.DataFrame(data_list_or_path, columns=names)
-    elif isinstance(data_list_or_path, str) and os.path.exists(data_list_or_path):
-        data_df = pd.read_csv(data_list_or_path, header=header, delimiter=delimiter, names=names)
-    elif isinstance(data_list_or_path, pd.DataFrame):
-        data_df = data_list_or_path
+    if isinstance(data, list):
+        data_df = pd.DataFrame(data, columns=names)
+    elif isinstance(data, str) and os.path.exists(data):
+        data_df = pd.read_csv(data, header=header, delimiter=delimiter, names=names)
+    elif isinstance(data, pd.DataFrame):
+        data_df = data
     else:
-        raise TypeError('should be list or file path, eg: [(label, text), ... ]')
+        raise TypeError('should be list or file path, and file path must be exist, list eg: [(label, text), ... ]')
 
-    task_type = "mc"
     X, y = data_df['text'], data_df['labels']
     labels = set()#统计label的种类
     if y.size:
         for label in y.tolist():
             label_split = label.split(labels_sep)
             labels.update(label_split)
-            if len(label_split) > 1:
-                task_type = "ml"
         num_classes = len(labels)
         labels = sorted(list(labels))
         logging.info(f'loaded data list, X size: {len(X)}, y size: {len(y)}')
-        if is_train:
-            logging.info('num_classes: %d, labels: %s' % (num_classes, labels))
     assert len(X) == len(y)
-    assert task_type in ["mc", "ml"], \
-        "vocab_level must be in  [mc, ml], which represent multi_class or multi_label"
-    return X, y, task_type
+    return X, y
 
 def is_chinese(uchar):
     """判断一个unicode是否是汉字"""
@@ -95,6 +88,20 @@ def remove_punctuation(strs):
     :return:
     """
     return re.sub("[\s+\.\!\/<>“”,$%^*(+\"\']+|[+——！，。？、~@#￥%……&*（）]+", "", strs.strip())
+
+def load_stop_words(stop_word_file):
+    """
+    加载停用词表
+    :param stop_word_file: 停用词表文件路径
+    :return: list of stop words
+    """
+    if not os.path.exists(stop_word_file):
+        logging.warning("stop word file doesn't exist")
+        return []
+    with open(stop_word_file, "r", encoding="utf-8") as fr:
+        lines = [line.strip() for line in fr]
+    return lines
+
 
 if __name__ == '__main__':
     load_data()

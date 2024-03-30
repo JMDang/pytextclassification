@@ -1,9 +1,9 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 """
-File  :   rnn_classfier.py
+File  :   text_cnn_classfier.py
 Author:   dangjinming(jmdang777@qq.com)
-Desc  :   rnn_classfier
+Desc  :   text_cnn_classfier
 """
 
 import collections
@@ -120,66 +120,56 @@ def build_dataset(
     return SelfDataset(train_datasets), vocab, label_encoder
 
 
-class TextRNNAttModel(nn.Module):
-    """Attention-Based Bidirectional Long Short-Term Memory Networks for Relation Classification"""
+class TextCNNModel(nn.Module):
+    """Convolutional Neural Networks for Sentence Classification"""
 
     def __init__(
             self,
             vocab_size,
             num_classes,
             embed_size=300,
-            lstm_hidden_size=256,
-            fc_hidden_size=128,
-            lstm_layers=2,
-            pooling_type="mean",
-            lstm_dropout_rate=0.3
+            filter_sizes=(2, 3, 4), 
+            num_filters=256, 
+            dropout_rate=0.5
     ):
+        """
+        Init the TextCNNModel
+        @param vocab_size:
+        @param num_classes:
+        @param embed_size:
+        @param filter_sizes: 卷积核尺寸
+        @param num_filters: 卷积核数量(channels数)
+        @param dropout_rate:
+        """
         super().__init__()
-        self.pooling_type = pooling_type
-        self.word_emb = nn.Embedding(vocab_size, embed_size, padding_idx=0)
+        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=0)
+        self.convs = nn.ModuleList(
+            [nn.Conv2d(1, num_filters, (k, embed_size)) for k in filter_sizes])
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc = nn.Linear(num_filters * len(filter_sizes), num_classes)
 
-        self.lstm = nn.LSTM(input_size=embed_size,
-                            hidden_size=lstm_hidden_size,
-                            num_layers=lstm_layers,
-                            bidirectional=True,
-                            batch_first=True,
-                            dropout=lstm_dropout_rate)
-        self.att = SelfAttention(lstm_hidden_size)
-        self.fc = nn.Linear(lstm_hidden_size * 2, fc_hidden_size)
-        self.tanch = nn.Tanh()
-        self.output_layer = nn.Linear(fc_hidden_size, num_classes)
+    def conv_and_pool(self, x, conv):
+        x = F.relu(conv(x)).squeeze(3)
+        x = F.max_pool1d(x, x.size(2)).squeeze(2)
+        return x
 
     def forward(self, inputs, true_lengths=None):
-        # Shape: (batch_size, num_tokens, embedding_dim)
-        embedded_text = self.word_emb(inputs)
-        encoded_text, _ = self.lstm(embedded_text)
-        if self.pooling_type == 'sum':
-            encoded_text_pool = torch.sum(encoded_text, dim=1)
-        elif self.pooling_type == 'max':
-            encoded_text_pool = torch.max(encoded_text, dim=1)
-        elif self.pooling_type == 'mean':
-            encoded_text_pool = torch.mean(encoded_text, dim=1)
-        else:
-            raise RuntimeError(
-                "Unexpected pooling type %s ."
-                "Pooling type must be one of sum, max and mean." %
-                self.pooling_type)
+        out = self.embedding(inputs)
+        out = out.unsqueeze(1)
+        out = torch.cat([self.conv_and_pool(out, conv) for conv in self.convs], 1)
+        out = self.dropout(out)
+        out = self.fc(out)
+        return out
 
-        fc_out = self.tanch(self.fc(encoded_text_pool))
-        # Shape: (batch_size, num_classes)
-        logits = self.output_layer(fc_out)
-        return logits
-
-
-class TextRNNClassifier(ClassifierBase):
-    """TextRNNClassifier"""
+class TextCNNClassifier(ClassifierBase):
+    """TextCNNClassifier"""
 
     def __init__(
-            self,
+            self,            
             multi_label=False,
-            lstm_hidden_size=128,
-            num_layers=2,
-            lstm_dropout_rate=0.5,
+            filter_sizes=(2, 3, 4), 
+            num_filters=256,
+            cnn_dropout_rate=0.5,
             use_cuda=True,
             cuda_device=-1,
             args=None,
@@ -187,10 +177,8 @@ class TextRNNClassifier(ClassifierBase):
             **kwargs
     ):
         """
-        Init the TextRNNClassifier
-        @param lstm_hidden_size: lstm隐藏层
-        @param num_layers: lstm层数
-        @param lstm_dropout_rate:
+        Init the TextCNNClassifier
+        @param cnn_dropout_rate:
         """
         if use_cuda:
             if torch.cuda.is_available():
@@ -202,9 +190,7 @@ class TextRNNClassifier(ClassifierBase):
                 raise ValueError("'use_cuda' set to True when cuda is unavailable."
                                  " Make sure CUDA is available or set use_cuda=False.")
         logger.info(f'device: {self.device}')
-
-        self.lstm_dropout_rate = lstm_dropout_rate
-
+        
         self.args =  ClassificationArgs()
         if isinstance(args, dict):
             self.args.update_from_dict(args)
@@ -216,15 +202,15 @@ class TextRNNClassifier(ClassifierBase):
                 "multi_label": multi_label,
                 "use_cuda": use_cuda,
                 "labels_sep": labels_sep,  # if multi_label is true,it will be valid
-                "lstm_hidden_size": lstm_hidden_size,
-                "num_layers": num_layers,
+                "cnn_dropout_rate": cnn_dropout_rate,
+                "filter_sizes": filter_sizes,
+                "num_filters": num_filters
             }
         )
-        set_seed(self.args.SEED)
         self.model = None
 
     def __str__(self):
-        return f'TextRNNClassifier instance ({self.model})'
+        return f'TextCNNClassifier instance ({self.model})'
 
     def train(
             self,
@@ -243,7 +229,9 @@ class TextRNNClassifier(ClassifierBase):
         @param args:
         @param eval_data:
         @return:
-        """    
+        """
+        SEED = 1024
+        set_seed(SEED)
 
         logger.info('train model...')
         if args:
@@ -321,14 +309,13 @@ class TextRNNClassifier(ClassifierBase):
         logger.info(f'train_data_size:{len(train_dataset)}, dev_data_size: {len(dev_iter) if dev_iter else "no dev_data"}')
 
         # 3. 创建model
-        self.model = TextRNNAttModel(
-            vocab_size, 
-            num_labels,
+        self.model = TextCNNModel(
+            vocab_size=vocab_size,
+            num_classes=num_labels,
             embed_size=self.args.embed_size,
-            lstm_hidden_size=self.args.lstm_hidden_size,
-            lstm_layers=self.args.num_layers,
-            pooling_type=self.args.pooling_type,
-            lstm_dropout_rate=self.args.lstm_dropout_rate
+            filter_sizes=self.args.filter_sizes,
+            num_filters=self.args.num_filters,
+            dropout_rate=self.args.cnn_dropout_rate,
         )
         self._move_model_to_device()
         # 4. 训练循环
@@ -780,17 +767,16 @@ class TextRNNClassifier(ClassifierBase):
         label_encoder = LabelEncoder(label_vocab_file)
 
         vocab_size = len(vocab)
-        num_classes = label_encoder.size()
+        num_labels = label_encoder.size()
 
         #创建model
-        self.model = TextRNNAttModel(
-            vocab_size, 
-            num_classes,
+        self.model = TextCNNModel(
+            vocab_size=vocab_size,
+            num_classes=num_labels,
             embed_size=self.args.embed_size,
-            lstm_hidden_size=self.args.lstm_hidden_size,
-            lstm_layers=self.args.num_layers,
-            pooling_type=self.args.pooling_type,
-            lstm_dropout_rate=self.lstm_dropout_rate
+            filter_sizes=self.args.filter_sizes,
+            num_filters=self.args.num_filters,
+            dropout_rate=self.args.cnn_dropout_rate,
         )
         self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         self._move_model_to_device()
@@ -945,17 +931,18 @@ if __name__ == '__main__':
     train_args = ClassificationArgs()
     train_args.num_labels = 2
     train_args.num_train_epochs = 2
-    train_args.batch_size = 256
+    train_args.batch_size = 128
+    train_argsvocab_level = "wor"
 
-    textrnn = TextRNNClassifier(multi_label=True, args=train_args)
+    textcnn = TextCNNClassifier(multi_label=False, args=train_args)
 
     #模型训练
-    textrnn.train(train_data="data/train.txt", eval_data="data/dev.txt")
+    textcnn.train(train_data="data/train.txt", eval_data="data/dev.txt")
 
 
     #加载在验证集效果最好的模型进行预测
-    textrnn.load_model()
-    preds, model_outputs = textrnn.predict([
+    textcnn.load_model()
+    preds, model_outputs = textcnn.predict([
         "柔弱的儿媳跪在地上向老头子苦苦哀求：“够了，适可而止！",
         "那里芳草丛生，他徘徊找不到入口，最终还是她领着他进来",
         "儿媳妇想来都是保守稳重的人，但是夜深人静后像变了个人似的",

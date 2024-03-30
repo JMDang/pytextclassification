@@ -19,29 +19,29 @@ class Vocab(object):
     """The class used to convert between tokens and ids. It also includes some
     store/load functions.
     """
-    def __init__(self, vocab_dict_or_path, vocab_level="char", unk_token="[UNK]", pad_token="[PAD]"):
+    def __init__(self, vocab_dict_or_path, unk_token="[UNK]", pad_token="[PAD]"):
         """vocab init
         """
         assert vocab_dict_or_path, "token_to_idx should not be None"
-        assert vocab_level in ["char", "word"], "vocab_level must be in  [char, word]"
-
         self.unk_token = unk_token
         self.pad_token = pad_token
-        self.vocab_level = vocab_level
 
         if isinstance(vocab_dict_or_path, dict):
+            self.vocab_level = self._get_vocab_level(vocab_dict_or_path)
             if unk_token not in vocab_dict_or_path and pad_token not in vocab_dict_or_path:
                 for key in vocab_dict_or_path:
                     vocab_dict_or_path[key] += 2
             vocab_dict_or_path[pad_token] = 0
             vocab_dict_or_path[unk_token] = 1
-            self.token_to_idx = vocab_dict_or_path
-            self.idx_to_token = {idx: token for token, idx in self.token_to_idx.items()}
+
+            self._token_to_idx = vocab_dict_or_path
+            self._idx_to_token = {idx: token for token, idx in self._token_to_idx.items()}
         elif isinstance(vocab_dict_or_path, str) and os.path.exists(vocab_dict_or_path):
-            self.token_to_idx = Vocab.load_vocabulary(vocab_dict_or_path,
+            self._token_to_idx = Vocab.load_vocabulary(vocab_dict_or_path,
                                       unk_token=self.unk_token,
                                       pad_token=self.pad_token)
-            self.idx_to_token = {idx: token for token, idx in self.token_to_idx.items()}
+            self.vocab_level = self._get_vocab_level( self._token_to_idx)
+            self._idx_to_token = {idx: token for token, idx in self._token_to_idx.items()}
         else:
             raise TypeError("unknown vocab_dict_or_path type: {}".format(type(vocab_dict_or_path)))
 
@@ -78,13 +78,23 @@ class Vocab(object):
         """
         return self[tokens]
 
+    def _get_vocab_level(self, vocab_dic):
+        """"""
+        num_greter_than_1 = 0
+        for key in vocab_dic:
+            if len(key) > 1:
+                num_greter_than_1 += 1
+        if num_greter_than_1 > 9:
+            return "word"
+        return "char"
+
     def __getitem__(self, tokens):
         """tokens：list/tuple/str"""
         if not isinstance(tokens, (list, tuple)):
-            return self.token_to_idx.get(tokens, self.token_to_idx[self.unk_token])
+            return self._token_to_idx.get(tokens, self._token_to_idx[self.unk_token])
         else:
             return [
-                self.token_to_idx.get(token, self.token_to_idx[self.unk_token]) for token in tokens
+                self._token_to_idx.get(token, self._token_to_idx[self.unk_token]) for token in tokens
             ]
 
     def __len__(self):
@@ -92,6 +102,16 @@ class Vocab(object):
 
     def __call__(self, tokens):
         return self[tokens]
+
+    @property
+    def idx_to_token(self):
+        # Returns index-token dict
+        return self._idx_to_token
+
+    @property
+    def token_to_idx(self):
+        # Return token-index dict
+        return self._token_to_idx
 
     @staticmethod
     def load_vocabulary(vocab_path, unk_token="[UNK]", pad_token="[PAD]"):
@@ -115,10 +135,11 @@ class Vocab(object):
                 f.write(self.idx_to_token[idx] + "\n")
 
     @staticmethod
-    def build_vocab(contents, max_size=100000, min_freq=1, unk_token="[UNK]", pad_token="[PAD]", vocab_level="char"):
+    def build_vocab(texts, max_size=100000, min_freq=1, unk_token="[UNK]", pad_token="[PAD]", vocab_level="word"):
         assert vocab_level in ["char", "word"], "vocab_level must be in  [char, word]"
+        word_segmenter = jieba.Tokenizer()
         vocab_dic = {}
-        for line in tqdm(contents):
+        for line in tqdm(texts):
             line = line.strip()
             if not line:
                 continue
@@ -127,7 +148,7 @@ class Vocab(object):
                 for word in content:
                     vocab_dic[word] = vocab_dic.get(word, 0) + 1
             else:
-                for word in jieba.cut(content):
+                for word in word_segmenter.lcut(content, False, True):
                     vocab_dic[word] = vocab_dic.get(word, 0) + 1
 
         vocab_list = sorted([_ for _ in vocab_dic.items() if _[1] >= min_freq], key=lambda x: x[1], reverse=True)[
@@ -135,6 +156,12 @@ class Vocab(object):
         vocab_dic = {word_count[0]: index+2 for index, word_count in enumerate(vocab_list)}
         vocab_dic.update({pad_token: 0, unk_token: 1})
         return vocab_dic
+    
+    def get_unk_token_id(self):
+        return self._token_to_idx[self.unk_token] if self.unk_token is not None else self.unk_token
+
+    def get_pad_token_id(self):
+        return self._token_to_idx[self.pad_token] if self.pad_token is not None else self.pad_token
 
 if __name__ == "__main__":
     # vocab = Vocab("./vocab")

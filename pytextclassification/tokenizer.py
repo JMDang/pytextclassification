@@ -31,11 +31,11 @@ class CommonTokenizer(BaseTokenizer):
 
     def __init__(self, vocab):
         super(CommonTokenizer, self).__init__(vocab)
-        self.word_segmenter  = jieba.Tokenizer()
+        self.word_segmenter = jieba.Tokenizer()
         # initialize tokenizer
-        self.word_segmenter .FREQ = {key: 1 for key in self.vocab.token_to_idx.keys()}
-        self.word_segmenter .total = len(self.word_segmenter .FREQ)
-        self.word_segmenter .initialized = True
+        self.word_segmenter.FREQ = {key: 1 for key in self.vocab.token_to_idx.keys()}
+        self.word_segmenter.total = len(self.word_segmenter.FREQ)
+        self.word_segmenter.initialized = True
 
     def tokenize(self, sentence, cut_all=False, use_hmm=True):
         """
@@ -45,6 +45,15 @@ class CommonTokenizer(BaseTokenizer):
             return list(self.word_segmenter.lcut(sentence, cut_all, use_hmm))
         else:
             return [ch for ch in sentence]
+    
+    def tokenize_with_stop_words(self, sentence, stop_words, cut_all=False, use_hmm=True):
+        """
+        The method used to cut the text to tokens.
+        """
+        if self.vocab.vocab_level == "word":
+            return [word for word in list(self.word_segmenter.lcut(sentence, cut_all, use_hmm)) if word not in stop_words]
+        else:
+            return [ch for ch in sentence if ch not in stop_words ]
 
     def encode(self, sentence, cut_all=False, use_hmm=True):
         """
@@ -54,3 +63,6 @@ class CommonTokenizer(BaseTokenizer):
         """
         words = self.tokenize(sentence, cut_all, use_hmm)
         return self.vocab.to_indices(words)
+
+    def __call__(self, sentence):
+        return self.encode(sentence, cut_all=False, use_hmm=True)

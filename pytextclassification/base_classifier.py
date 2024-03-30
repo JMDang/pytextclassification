@@ -13,14 +13,14 @@ class ClassifierBase(object):
     Abstract Base Class
     """
 
-    def train(self, data_list_or_path, model_dir: str, **kwargs):
+    def train(self, train_data, eval_data, model_dir: str, **kwargs):
         raise NotImplementedError('train method not implemented.')
 
-    def predict(self, predict_data_list_or_path: list):
+    def predict(self, predict_data: list):
         raise NotImplementedError('predict method not implemented.')
 
-    def evaluate(self, **kwargs):
-        raise NotImplementedError('evaluate method not implemented.')
+    def eval(self, **kwargs):
+        raise NotImplementedError('eval method not implemented.')
 
     def load_model(self):
         raise NotImplementedError('load method not implemented.')

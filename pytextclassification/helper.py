@@ -21,6 +21,21 @@ def set_seed(seed=1024):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+def flatten_results(results, parent_key="", sep="/"):
+    out = []
+    if isinstance(results, Mapping):
+        for key, value in results.items():
+            pkey = parent_key + sep + str(key) if parent_key else str(key)
+            out.extend(flatten_results(value, parent_key=pkey).items())
+    elif isinstance(results, Iterable):
+        for key, value in enumerate(results):
+            pkey = parent_key + sep + str(key) if parent_key else str(key)
+            out.extend(flatten_results(value, parent_key=pkey).items())
+    else:
+        out.append((parent_key, results))
+    return dict(out)
+
+    
 def multi_classify_prf_macro(y_true, y_pre):
     """macro prf
     每个类别看作二分类,每个TP FN FP TN,算prf后平均
