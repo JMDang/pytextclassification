@@ -2093,7 +2093,7 @@ if __name__ == "__main__":
     #训练模型实例化
     model = BertClassificationModel(
             model_type="ernie",
-            model_name="./ernie-3.0-medium-zh",
+            model_name="./ernie-3.0-medium-zh",#可换成对应的modelname，参考huggingface上的如“ernie-3.0-medium-zh”，“bert-base-chinese”
             num_labels=2,
             multi_label=True,
             args=train_args,
